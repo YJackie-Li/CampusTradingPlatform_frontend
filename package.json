@@ -1,0 +1,32 @@
+{
+  "name": "trading-platform-frontend",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 33333",
+    "build": "vite build",
+    "preview": "vite preview --host 127.0.0.1 --port 4173"
+  },
+  "dependencies": {
+    "@element-plus/icons-vue": "^2.3.2",
+    "@stomp/stompjs": "^7.0.0",
+    "axios": "^1.18.1",
+    "echarts": "^6.1.0",
+    "element-china-area-data": "^5.0.2",
+    "element-plus": "^2.14.2",
+    "pinia": "^3.0.4",
+    "sockjs-client": "^1.6.1",
+    "sortablejs": "^1.15.7",
+    "vue": "^3.5.38",
+    "vue-router": "^5.1.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^6.0.7",
+    "vite": "^8.0.16",
+    "vite-plugin-vue-devtools": "^8.1.2"
+  },
+  "engines": {
+    "node": "^22.18.0 || >=24.12.0"
+  }
+}

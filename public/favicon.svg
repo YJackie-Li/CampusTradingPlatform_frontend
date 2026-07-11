@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- 圆角橘色背景 -->
+  <rect x="2" y="2" width="60" height="60" rx="14" fill="#ff6b35"/>
+  <!-- 校门拱形(代表校园) -->
+  <path d="M16 48 L16 30 Q16 20 32 20 Q48 20 48 30 L48 48 Z"
+        fill="none" stroke="#ffffff" stroke-width="3" stroke-linejoin="round"/>
+  <!-- 校门柱子 -->
+  <line x1="22" y1="48" x2="22" y2="30" stroke="#ffffff" stroke-width="2"/>
+  <line x1="42" y1="48" x2="42" y2="30" stroke="#ffffff" stroke-width="2"/>
+  <!-- 拱顶上的"小"字旗,代表校园标识(简化为三角旗) -->
+  <path d="M32 14 L36 18 L32 18 Z" fill="#ffffff"/>
+  <!-- 底部购物袋(代表淘物) -->
+  <path d="M22 38 L22 50 Q22 53 25 53 L39 53 Q42 53 42 50 L42 38 Z"
+        fill="#ffffff" opacity="0.95"/>
+  <!-- 购物袋提手(两道短弧) -->
+  <path d="M27 38 Q27 33 30 33" stroke="#ff6b35" stroke-width="1.6" fill="none" stroke-linecap="round"/>
+  <path d="M34 33 Q37 33 37 38" stroke="#ff6b35" stroke-width="1.6" fill="none" stroke-linecap="round"/>
+  <!-- 袋口 -->
+  <line x1="22" y1="38" x2="42" y2="38" stroke="#ff6b35" stroke-width="1.6"/>
+</svg>
