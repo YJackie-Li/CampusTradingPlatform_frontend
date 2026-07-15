@@ -63,3 +63,8 @@ export const updateAdminCampusPerson = (id, data) =>
 
 export const deleteAdminCampusPerson = (id) =>
   http.delete(`/admin/campus-person/${id}`)
+
+// 批量导入白名单。前端用 xlsx 解析 .xlsx/.xls/.csv 后,以 JSON 形式提交;
+// 后端按行处理,返回 success / skipped / failed + 错误行明细。
+export const importCampusPerson = (items) =>
+  http.post('/admin/campus-person/import', { items })

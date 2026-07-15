@@ -21,6 +21,7 @@ const menus = [
   },
   { key: 'categories', path: '/admin-home/categories', label: '商品分类', icon: 'Menu' },
   { key: 'refunds', path: '/admin-home/refunds', label: '退款管理', icon: 'RefreshLeft' },
+  { key: 'orders', path: '/admin-home/orders', label: '订单管理', icon: 'List' },
   { key: 'review-reports', path: '/admin-home/review-reports', label: '评价举报管理', icon: 'Warning' },
   { key: 'wallet', path: '/admin-home/wallet', label: '钱包管理', icon: 'Wallet' },
   { key: 'messages', path: '/admin-home/messages', label: '消息管理', icon: 'ChatDotRound' },

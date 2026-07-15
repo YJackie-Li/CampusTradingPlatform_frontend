@@ -8,6 +8,8 @@ import {
   auditStatusText,
   tradeMethodText,
   saleStatusText,
+  conditionLevelText,
+  CONDITION_LEVEL_MAP,
 } from '@/api/goods'
 import PageFilterBar from './components/PageFilterBar.vue'
 import ImageViewer from '@/components/ImageViewer.vue'
@@ -26,13 +28,9 @@ const fields = [
     label: '新旧程度',
     type: 'select',
     placeholder: '全部',
-    options: [
-      { value: 9, label: '全新' },
-      { value: 8, label: '九成新' },
-      { value: 7, label: '八成新' },
-      { value: 6, label: '七成新' },
-      { value: 5, label: '五成新' },
-    ],
+    options: Object.entries(CONDITION_LEVEL_MAP)
+      .sort(([a], [b]) => Number(b) - Number(a))
+      .map(([v, label]) => ({ value: Number(v), label })),
   },
 ]
 
@@ -121,10 +119,9 @@ const openDetailImage = (idx) => {
   detailImageViewerOpen.value = true
 }
 
-const conditionText = (l) => {
-  const map = { 10: '全新', 9: '几乎全新', 8: '九成新', 7: '八成新', 6: '七成新', 5: '五成新及以下' }
-  return map[l] || '几乎全新'
-}
+// 列表/详情统一用共享 mapping（@/api/goods 的 CONDITION_LEVEL_MAP）；
+// 之前的硬编码 + "||'几乎全新'"兜底导致 4/3/2/1 一律显示"几乎全新",已修复
+const conditionText = conditionLevelText
 </script>
 
 <template>

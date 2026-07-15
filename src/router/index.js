@@ -99,6 +99,12 @@ const routes = [
         component: () => import('@/views/admin/MessagesPage.vue'),
         meta: { title: '消息管理' },
       },
+      {
+        path: 'orders',
+        name: 'AdminOrders',
+        component: () => import('@/views/admin/OrdersPage.vue'),
+        meta: { title: '订单管理' },
+      },
     ],
   },
   {

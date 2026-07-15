@@ -1,8 +1,8 @@
 <script setup>
-import { reactive, ref, watch } from 'vue'
+import { reactive, ref, watch, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { register } from '@/api/auth'
+import { register, getCaptcha } from '@/api/auth'
 import { quickCheckVerify } from '@/api/verify'
 
 const router = useRouter()
@@ -16,6 +16,26 @@ const form = reactive({
   gender: 1,
   campusId: '',
   realName: '',
+  captchaCode: '', // 用户输入的验证码
+})
+
+// 验证码相关:与 Login.vue 共用同一套交互
+const captchaId = ref('')
+const captchaImage = ref('')
+
+const loadCaptcha = async () => {
+  try {
+    const data = await getCaptcha()
+    captchaId.value = data.captchaId
+    captchaImage.value = data.imageBase64
+    form.captchaCode = ''
+  } catch (e) {
+    ElMessage.warning('验证码加载失败,请刷新页面重试')
+  }
+}
+
+onMounted(() => {
+  loadCaptcha()
 })
 
 const formRef = ref()
@@ -56,6 +76,10 @@ const rules = {
   realName: [
     { max: 30, message: '真实姓名长度 ≤ 30', trigger: 'blur' },
   ],
+  captchaCode: [
+    { required: true, message: '请输入验证码', trigger: 'blur' },
+    { min: 4, max: 6, message: '验证码长度不正确', trigger: 'blur' },
+  ],
 }
 
 // 用户修改学号/姓名时清掉旧的反馈
@@ -88,6 +112,10 @@ const handleRegister = async () => {
   } catch {
     return
   }
+  if (!captchaId.value) {
+    ElMessage.error('验证码未加载,请刷新')
+    return
+  }
   submitting.value = true
   try {
     await register({
@@ -98,11 +126,14 @@ const handleRegister = async () => {
       gender: form.gender,
       campusId: form.campusId || undefined,
       realName: form.realName || undefined,
+      captchaId: captchaId.value,
+      captchaCode: form.captchaCode,
     })
     ElMessage.success('注册成功,请登录')
     router.push('/login')
   } catch (e) {
-    ElMessage.error(e?.message || '注册失败')
+    // 业务错误(验证码错误/用户名重复)由 http 拦截器 toast
+    loadCaptcha()
   } finally {
     submitting.value = false
   }
@@ -163,6 +194,27 @@ const goLogin = () => router.push('/login')
             <el-radio :value="1">男</el-radio>
             <el-radio :value="2">女</el-radio>
           </el-radio-group>
+        </el-form-item>
+
+        <el-form-item label="验证码" prop="captchaCode">
+          <div class="captcha-row">
+            <el-input
+              v-model="form.captchaCode"
+              placeholder="请输入验证码"
+              clearable
+              maxlength="6"
+              class="captcha-input"
+            />
+            <img
+              v-if="captchaImage"
+              :src="captchaImage"
+              class="captcha-img"
+              alt="验证码"
+              title="点击换一张"
+              @click="loadCaptcha"
+            />
+            <a href="javascript:;" class="captcha-refresh" @click="loadCaptcha">换一张</a>
+          </div>
         </el-form-item>
 
         <el-divider content-position="left">校园身份认证(可选,但强烈建议完成)</el-divider>
@@ -296,6 +348,37 @@ const goLogin = () => router.push('/login')
   font-size: 11px;
 }
 .check-dept { margin-left: 4px; color: #888; }
+
+/* 验证码行:输入框 + 图片 + 换一张 */
+.captcha-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+}
+.captcha-input {
+  flex: 1;
+  min-width: 0;
+}
+.captcha-img {
+  width: 110px;
+  height: 38px;
+  border-radius: 6px;
+  cursor: pointer;
+  border: 1px solid #e4e7ed;
+  background: #f5f7fa;
+  object-fit: contain;
+  transition: opacity 0.2s;
+}
+.captcha-img:hover { opacity: 0.85; }
+.captcha-refresh {
+  font-size: 12px;
+  color: #ff6b35;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: opacity 0.2s;
+}
+.captcha-refresh:hover { opacity: 0.7; }
 
 .submit-btn {
   width: 100%;

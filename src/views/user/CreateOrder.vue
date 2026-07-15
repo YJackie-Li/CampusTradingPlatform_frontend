@@ -1,10 +1,11 @@
 <script setup>
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { ArrowLeft, Plus, Minus, Box, Van } from '@element-plus/icons-vue'
+import { regionData } from 'element-china-area-data'
 import { getGoods } from '@/api/goods'
-import { getAddressList } from '@/api/addresses'
+import { getAddressList, addAddress } from '@/api/addresses'
 import { createOrder } from '@/api/orders'
 import { useUserStore } from '@/stores/user'
 
@@ -112,9 +113,77 @@ const pickAddress = (a) => {
   openAddressPicker.value = false
 }
 
-// 费用
-const FREIGHT = 6
-const freight = computed(() => (isExpress.value ? FREIGHT : 0))
+// ===== 内嵌新增地址(在当前页面直接添加,不跳走)=====
+const openAddAddressDialog = ref(false)
+const addingAddress = ref(false)
+const emptyAddrForm = () => ({
+  receiver: '',
+  phone: '',
+  region: [], // 汉字数组 [省, 市, 区]
+  detail: '',
+  isDefault: false,
+})
+const addrForm = reactive(emptyAddrForm())
+const addrFormRef = ref()
+const addrFormRules = {
+  receiver: [{ required: true, message: '请输入收件人', trigger: 'blur' }],
+  phone: [
+    { required: true, message: '请输入手机号', trigger: 'blur' },
+    { pattern: /^1[3-9]\d{9}$/, message: '手机号格式不正确', trigger: 'blur' },
+  ],
+  region: [{ required: true, message: '请选择省/市/区', trigger: 'change' }],
+  detail: [{ required: true, message: '请输入详细地址', trigger: 'blur' }],
+}
+
+const openAddAddress = () => {
+  // 切到新增弹窗前,先关闭"选择地址"弹窗,避免两个 dialog 叠加视觉混乱
+  openAddressPicker.value = false
+  Object.assign(addrForm, emptyAddrForm())
+  openAddAddressDialog.value = true
+}
+const cancelAddAddress = () => {
+  openAddAddressDialog.value = false
+}
+const submitAddAddress = async () => {
+  if (!addrFormRef.value) return
+  try {
+    await addrFormRef.value.validate()
+  } catch {
+    return
+  }
+  addingAddress.value = true
+  const [province, city, district] = addrForm.region
+  // cascader 用 :props="{ value: 'label' }" 后,region 已是汉字数组,直接提交
+  try {
+    const created = await addAddress({
+      receiver: addrForm.receiver.trim(),
+      phone: addrForm.phone.trim(),
+      province,
+      city,
+      district,
+      detail: addrForm.detail.trim(),
+      isDefault: addrForm.isDefault ? 1 : 0,
+    })
+    // 后端 AddressVO 含 fullAddress,前端拿来直接用;列表里也是它负责拼接
+    const newId = created?.id
+    openAddAddressDialog.value = false
+    ElMessage.success('地址已添加')
+    // 刷新地址列表,确保新地址出现在选择弹窗里,并自动选中
+    await loadAddresses()
+    if (newId) selectedAddressId.value = newId
+  } catch (e) {
+    // http.js 拦截器已 toast;留在弹窗让用户改后再试
+  } finally {
+    addingAddress.value = false
+  }
+}
+
+// 费用：运费按商品本来的 freight 计(0=包邮)
+const freight = computed(() => {
+  if (!isExpress.value) return 0
+  const f = Number(product.value?.freight)
+  return Number.isFinite(f) && f >= 0 ? f : 0
+})
 const priceFmt = computed(() => Number(product.value?.price || 0).toLocaleString('zh-CN'))
 const subtotalFmt = computed(() =>
   ((Number(product.value?.price || 0)) * buyQuantity.value).toLocaleString('zh-CN', {
@@ -272,7 +341,11 @@ onMounted(async () => {
               <div class="trade-info">
                 <div class="trade-name">{{ m === 'FACE_TO_FACE' ? '自提' : '邮寄' }}</div>
                 <div class="trade-desc">
-                  {{ m === 'FACE_TO_FACE' ? '自行与卖家沟通取货' : '需选择收货地址（运费 ¥6）' }}
+                  {{ m === 'FACE_TO_FACE'
+                    ? '自行与卖家沟通取货'
+                    : (product?.freight && Number(product.freight) > 0
+                        ? `需选择收货地址（运费 ¥${Number(product.freight).toFixed(2)}）`
+                        : '需选择收货地址（包邮）') }}
                 </div>
               </div>
               <span v-if="selectedTrade === m" class="trade-check">✓</span>
@@ -368,8 +441,65 @@ onMounted(async () => {
         </div>
       </div>
       <template #footer>
+        <el-button :icon="Plus" @click="openAddAddress">新增收货地址</el-button>
         <el-button @click="openAddressPicker = false">取消</el-button>
         <el-button type="primary" @click="openAddressPicker = false">确定</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- ===== 内嵌新增收货地址弹窗 ===== -->
+    <el-dialog
+      v-model="openAddAddressDialog"
+      title="新增收货地址"
+      width="520px"
+      align-center
+      append-to-body
+      :close-on-click-modal="false"
+      @close="cancelAddAddress"
+    >
+      <el-form
+        ref="addrFormRef"
+        :model="addrForm"
+        :rules="addrFormRules"
+        label-width="84px"
+      >
+        <el-form-item label="收件人" prop="receiver">
+          <el-input v-model="addrForm.receiver" placeholder="请输入收件人姓名" maxlength="20" />
+        </el-form-item>
+        <el-form-item label="手机号" prop="phone">
+          <el-input v-model="addrForm.phone" placeholder="请输入11位手机号" maxlength="11" />
+        </el-form-item>
+        <el-form-item label="所在地区" prop="region">
+          <!-- 与 AddressList.vue 一致:cascader 用 :props="{ value: 'label' }",
+               region 全程是汉字数组,直接提交后端,无需 CodeToText 二次转换 -->
+          <el-cascader
+            v-model="addrForm.region"
+            :options="regionData"
+            :props="{ value: 'label' }"
+            class="full"
+            placeholder="请选择 省 / 市 / 区"
+          />
+        </el-form-item>
+        <el-form-item label="详细地址" prop="detail">
+          <el-input
+            v-model="addrForm.detail"
+            type="textarea"
+            :rows="2"
+            placeholder="街道、楼栋、门牌号等"
+            maxlength="100"
+            show-word-limit
+          />
+        </el-form-item>
+        <el-form-item label="设为默认">
+          <el-switch v-model="addrForm.isDefault" />
+          <span class="form-tip">默认地址在结算时会优先选择</span>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="cancelAddAddress">取消</el-button>
+        <el-button type="primary" :loading="addingAddress" @click="submitAddAddress">
+          保存
+        </el-button>
       </template>
     </el-dialog>
   </div>
@@ -769,5 +899,13 @@ onMounted(async () => {
   transform: translateY(-50%) rotate(180deg);
   color: #ff6b35;
   font-size: 18px;
+}
+
+/* ===== 新增收货地址表单 ===== */
+.full { width: 100%; }
+.form-tip {
+  margin-left: 10px;
+  color: #999;
+  font-size: 12px;
 }
 </style>

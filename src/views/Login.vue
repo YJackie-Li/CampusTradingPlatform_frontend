@@ -1,9 +1,9 @@
 <script setup>
-import { ref, reactive } from 'vue'
+import { ref, reactive, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { useUserStore } from '@/stores/user'
-import { login as loginApi } from '@/api/auth'
+import { login as loginApi, getCaptcha } from '@/api/auth'
 
 const router = useRouter()
 const userStore = useUserStore()
@@ -15,7 +15,25 @@ const activeRole = ref('user') // user-普通用户 / admin-管理员
 const loginForm = reactive({
   username: '',
   password: '',
+  captchaCode: '', // 用户输入的验证码
 })
+
+// 验证码相关:刷新时由 getCaptcha() 返回 captchaId,提交时带上
+const captchaId = ref('')
+const captchaImage = ref('') // base64 data URI,前端 <img :src> 直接渲染
+
+// 加载 / 刷新验证码
+const loadCaptcha = async () => {
+  try {
+    const data = await getCaptcha()
+    captchaId.value = data.captchaId
+    captchaImage.value = data.imageBase64
+    loginForm.captchaCode = '' // 切图时清空用户已输入,避免误提交
+  } catch (e) {
+    // 加载失败不阻塞登录页打开,提示一下即可
+    ElMessage.warning('验证码加载失败,请刷新页面重试')
+  }
+}
 
 // 表单校验规则
 const rules = {
@@ -27,16 +45,26 @@ const rules = {
     { required: true, message: '请输入密码', trigger: 'blur' },
     { min: 6, max: 20, message: '密码长度在 6-20 个字符', trigger: 'blur' },
   ],
+  captchaCode: [
+    { required: true, message: '请输入验证码', trigger: 'blur' },
+    { min: 4, max: 6, message: '验证码长度不正确', trigger: 'blur' },
+  ],
 }
 
 const loginFormRef = ref()
 const loading = ref(false)
+
+onMounted(() => {
+  loadCaptcha()
+})
 
 // 切换登录角色
 const switchRole = (role) => {
   activeRole.value = role
   loginForm.username = ''
   loginForm.password = ''
+  loginForm.captchaCode = ''
+  loadCaptcha() // 切 tab 也刷一张新图
 }
 
 // 提交登录
@@ -44,6 +72,10 @@ const handleLogin = async () => {
   if (!loginFormRef.value) return
   await loginFormRef.value.validate(async (valid) => {
     if (!valid) return
+    if (!captchaId.value) {
+      ElMessage.error('验证码未加载,请刷新')
+      return
+    }
     loading.value = true
     try {
       const data = await loginApi({
@@ -51,6 +83,8 @@ const handleLogin = async () => {
         password: loginForm.password,
         // 后端以表内 role 为准，这里传过去只是让后端校验登录身份与所选 tab 一致
         role: activeRole.value === 'admin' ? 'ADMIN' : 'USER',
+        captchaId: captchaId.value,
+        captchaCode: loginForm.captchaCode,
       })
       // data 形如 { token, userInfo } —— 后端 Result.data
       userStore.login(data)
@@ -58,8 +92,9 @@ const handleLogin = async () => {
       // 管理员进入后台仪表盘，普通用户进入首页
       router.push(activeRole.value === 'admin' ? '/admin-home/dashboards' : '/home')
     } catch (e) {
-      // 业务错误已由 http 拦截器 toast，这里不再重复提示
-      console.error('login failed:', e)
+      // 业务错误(验证码错误/账号密码错误)由 http 拦截器 toast
+      // 验证码错误一般是输入错或过期,自动刷一张新的让用户重试
+      loadCaptcha()
     } finally {
       loading.value = false
     }
@@ -199,6 +234,32 @@ const goToForgot = () => {
                 <el-icon class="input-icon"><Lock /></el-icon>
               </template>
             </el-input>
+          </el-form-item>
+
+          <el-form-item prop="captchaCode">
+            <!-- 验证码行:输入框 + 图片 + 换一张按钮,Flex 一行内布局 -->
+            <div class="captcha-row">
+              <el-input
+                v-model="loginForm.captchaCode"
+                placeholder="请输入验证码"
+                clearable
+                maxlength="6"
+                class="captcha-input"
+              >
+                <template #prefix>
+                  <el-icon class="input-icon"><Key /></el-icon>
+                </template>
+              </el-input>
+              <img
+                v-if="captchaImage"
+                :src="captchaImage"
+                class="captcha-img"
+                alt="验证码"
+                title="点击换一张"
+                @click="loadCaptcha"
+              />
+              <a href="javascript:;" class="captcha-refresh" @click="loadCaptcha">换一张</a>
+            </div>
           </el-form-item>
 
           <div class="form-options">
@@ -570,6 +631,37 @@ const goToForgot = () => {
   margin: 6px 0 22px;
   font-size: 13px;
 }
+
+/* 验证码行:输入框 + 图片 + 换一张 */
+.captcha-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+}
+.captcha-input {
+  flex: 1;
+  min-width: 0; /* 让 el-input 在 flex 容器里能正常收缩 */
+}
+.captcha-img {
+  width: 110px;
+  height: 38px;
+  border-radius: 6px;
+  cursor: pointer;
+  border: 1px solid #e4e7ed;
+  background: #f5f7fa;
+  object-fit: contain;
+  transition: opacity 0.2s;
+}
+.captcha-img:hover { opacity: 0.85; }
+.captcha-refresh {
+  font-size: 12px;
+  color: #ff6b35;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: opacity 0.2s;
+}
+.captcha-refresh:hover { opacity: 0.7; }
 
 .form-options :deep(.el-checkbox__label) {
   color: #666;

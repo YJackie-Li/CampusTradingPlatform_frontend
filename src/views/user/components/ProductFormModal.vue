@@ -1,9 +1,9 @@
 <script setup>
-import { ref, reactive, watch, onMounted } from 'vue'
+import { ref, reactive, computed, watch, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Plus } from '@element-plus/icons-vue'
 import { getCategoryTree } from '@/api/categories'
-import { tradeMethodText } from '@/api/goods'
+import { tradeMethodText, CONDITION_LEVEL_MAP } from '@/api/goods'
 import { uploadFile } from '@/api/common'
 
 const props = defineProps({
@@ -28,7 +28,21 @@ const form = reactive({
   cover: '',
   images: [],
   address: '',
+  // 新增：运费(0=包邮)；仅当 tradeMethod 含 EXPRESS 时展示输入框
+  freight: 0,
 })
+
+// 是否需要展示运费：仅 EXPRESS / BOTH 涉及快递
+const showFreight = computed(
+  () => form.tradeMethod === 'EXPRESS' || form.tradeMethod === 'BOTH'
+)
+// 交易方式变更时同步：自提不收运费,自动归零；恢复非纯自提则保留原值
+watch(
+  () => form.tradeMethod,
+  (m) => {
+    if (m !== 'EXPRESS' && m !== 'BOTH') form.freight = 0
+  }
+)
 
 const rules = {
   title: [
@@ -73,6 +87,7 @@ watch(
           ? [...props.initial.images]
           : (props.initial.cover ? [props.initial.cover] : []),
         address: props.initial.address || '',
+        freight: props.initial.freight ?? 0,
       })
     }
   }
@@ -154,7 +169,13 @@ const handleSubmit = async () => {
   if (!formRef.value) return
   await formRef.value.validate((valid) => {
     if (!valid) return
-    emit('submit', { ...form, cover: form.cover || form.images[0] || '' })
+    // 自提不收运费,保底 0
+    const finalFreight = showFreight.value ? Number(form.freight || 0) : 0
+    emit('submit', {
+      ...form,
+      freight: finalFreight,
+      cover: form.cover || form.images[0] || '',
+    })
   })
 }
 
@@ -163,6 +184,12 @@ const tradeMethods = [
   { value: 'EXPRESS', label: '邮寄' },
   { value: 'BOTH', label: '两者皆可' },
 ]
+
+// 成色下拉选项：与 @/api/goods 的 CONDITION_LEVEL_MAP 共用一份数据
+// 渲染时降序展示(10 在上,1 在下)
+const conditionOptions = Object.fromEntries(
+  Object.entries(CONDITION_LEVEL_MAP).sort(([a], [b]) => Number(b) - Number(a))
+)
 </script>
 
 <template>
@@ -205,12 +232,13 @@ const tradeMethods = [
 
       <el-form-item label="新旧程度" prop="conditionLevel">
         <el-select v-model="form.conditionLevel" placeholder="请选择新旧程度" style="width: 100%">
-          <el-option :value="10" label="全新" />
-          <el-option :value="9" label="几乎全新" />
-          <el-option :value="8" label="九成新" />
-          <el-option :value="7" label="八成新" />
-          <el-option :value="6" label="七成新" />
-          <el-option :value="5" label="五成新及以下" />
+          <!-- 选项与 CONDITION_LEVEL_MAP 单一来源对齐,详情页/列表/我的商品显示完全一致 -->
+          <el-option
+            v-for="(text, val) in conditionOptions"
+            :key="val"
+            :value="Number(val)"
+            :label="text"
+          />
         </el-select>
       </el-form-item>
 
@@ -253,6 +281,17 @@ const tradeMethods = [
         <el-radio-group v-model="form.tradeMethod">
           <el-radio v-for="m in tradeMethods" :key="m.value" :value="m.value">{{ m.label }}</el-radio>
         </el-radio-group>
+      </el-form-item>
+
+      <el-form-item v-if="showFreight" label="运费">
+        <el-input-number
+          v-model="form.freight"
+          :min="0"
+          :precision="2"
+          :step="1"
+          controls-position="right"
+        />
+        <span class="form-tip">¥（填 0 表示包邮，由卖家承担）</span>
       </el-form-item>
 
       <el-form-item label="交易地点">

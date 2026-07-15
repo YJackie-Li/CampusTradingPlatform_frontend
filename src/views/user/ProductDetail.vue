@@ -16,9 +16,13 @@ import {
   Plus as IconPlus,
   Minus as IconMinus,
   Warning,
+  MagicStick,
+  RefreshRight,
+  Van,
 } from '@element-plus/icons-vue'
-import { getGoods, toggleFavorite, toggleWant, recordView } from '@/api/goods'
+import { getGoods, toggleFavorite, toggleWant, recordView, conditionLevelText } from '@/api/goods'
 import { getReviewPage, getReviewStats, getUserReviewStats } from '@/api/reviews'
+import { getGoodsAiSummary, getGoodsReviewSummary } from '@/api/ai'
 import { REPORT_TARGET } from '@/api/reviewReports'
 import { useUserStore } from '@/stores/user'
 import ImageViewer from '@/components/ImageViewer.vue'
@@ -152,6 +156,87 @@ const loadSellerStats = async (sellerId) => {
   }
 }
 
+// ============ AI 智能总结（手动触发 + 打字机）============
+// 设计：默认不加载，只有用户点了"AI 总结"按钮才调接口，控制 token 成本
+// state: 'idle'(未触发) | 'loading'(请求中) | 'typing'(打字机输出中) | 'loaded'(已加载) | 'error'(失败)
+// 后端返回 null 表示"不可用/关闭/无输入"，前端把它当作 error 状态显示重试入口
+// 切换商品(loadProduct)时重置所有 state，避免上一个商品的总结残留
+
+// --- 打字机：方案 B（30 字之前 30ms/字，30 字之后 10ms/字）---
+// 用递增 token 控制中断：切商品/重新触发时 token++，正在跑的 typeOut 下一轮检查到 token 不一致立即退出
+// 中文文本用字符迭代（JS string 按 UTF-16 code unit 切，常见 CJK + 标点 都落在 BMP 内，不会有 emoji surrogate 问题）
+let typingToken = 0
+
+async function typeOut(target, text, { slowChars = 30, slowMs = 30, fastMs = 10 } = {}) {
+  const myToken = ++typingToken
+  target.value = ''
+  for (let i = 0; i < text.length; i++) {
+    if (typingToken !== myToken) return // 被新的触发/重置打断
+    target.value = text.slice(0, i + 1)
+    const ms = i < slowChars ? slowMs : fastMs
+    await new Promise((r) => setTimeout(r, ms))
+  }
+  if (typingToken !== myToken) return
+  target.value = text // 完整输出,不再追加光标字符(光标由 template 条件渲染)
+}
+
+// --- 商品描述总结 ---
+const aiSummary = ref('')
+const aiSummaryState = ref('idle') // idle | loading | typing | loaded | error
+
+const triggerGoodsSummary = async () => {
+  if (!product.value?.id) return
+  aiSummary.value = ''
+  aiSummaryState.value = 'loading'
+  try {
+    const text = await getGoodsAiSummary(product.value.id)
+    if (text) {
+      aiSummaryState.value = 'typing'
+      await typeOut(aiSummary, text)
+      // typeOut 可能因 token 变化提前退出,只有当前 token 仍是自己的才切 loaded
+      aiSummaryState.value = aiSummaryState.value === 'typing' ? 'loaded' : aiSummaryState.value
+    } else {
+      aiSummaryState.value = 'error'
+    }
+  } catch {
+    aiSummaryState.value = 'error'
+  }
+}
+
+// --- 买家评价聚合总结 ---
+const reviewSummary = ref('')
+const reviewSummaryState = ref('idle')
+// 元数据:基于真实评价数据计算,跟 AI 输出无关,避免 AI 幻觉数字
+// (AI prompt 已禁止生成"X 条评价/平均 X.X 星",此处作为前端兜底展示)
+const reviewSummaryCount = ref(0)
+const reviewSummaryAvgRating = ref(0)
+
+const calcReviewMeta = () => {
+  const list = visibleReviews.value
+  reviewSummaryCount.value = list.length
+  const sum = list.reduce((s, r) => s + (Number(r.rating) || 0), 0)
+  reviewSummaryAvgRating.value = list.length ? sum / list.length : 0
+}
+
+const triggerReviewSummary = async () => {
+  if (!product.value?.id) return
+  reviewSummary.value = ''
+  reviewSummaryState.value = 'loading'
+  try {
+    const text = await getGoodsReviewSummary(product.value.id)
+    if (text) {
+      calcReviewMeta()
+      reviewSummaryState.value = 'typing'
+      await typeOut(reviewSummary, text)
+      reviewSummaryState.value = reviewSummaryState.value === 'typing' ? 'loaded' : reviewSummaryState.value
+    } else {
+      reviewSummaryState.value = 'error'
+    }
+  } catch {
+    reviewSummaryState.value = 'error'
+  }
+}
+
 // ============ 加载商品 ============
 const loadProduct = async (id) => {
   loading.value = true
@@ -165,6 +250,15 @@ const loadProduct = async (id) => {
     product.value = p
     isFavorited.value = !!p.isFavorite
     isWanted.value = !!p.isWant
+    // 切换商品时重置 AI 总结状态,避免上一个商品的总结残留
+    // typingToken++ 让正在跑的 typeOut 循环下一轮检查时退出,防止字串到新商品
+    typingToken++
+    aiSummary.value = ''
+    aiSummaryState.value = 'idle'
+    reviewSummary.value = ''
+    reviewSummaryState.value = 'idle'
+    reviewSummaryCount.value = 0
+    reviewSummaryAvgRating.value = 0
     await loadReviews(p.id)
     // 双角色口碑（卖家维度）与评价并行拉；任一失败都不阻塞主流程
     loadSellerStats(p.sellerId)
@@ -190,17 +284,35 @@ onMounted(() => {
 watch(() => route.params.id, (v) => v && userStore.isLoggedIn && loadProduct(v))
 
 // ============ 派生：标签 / 库存条 ============
+// 成色：文案走共享映射 conditionLevelText,与发布页/首页/我的商品完全一致;
+// 颜色仍按 lvl 分档(全新/较新/中等/较弱),让详情页看起来更有信息层级
 const conditionTag = computed(() => {
-  const lvl = product.value?.conditionLevel
-  if (lvl == null) return { text: '全新', color: '#52c41a', bg: '#f6ffed' }
-  if (lvl >= 9) return { text: '全新', color: '#52c41a', bg: '#f6ffed' }
-  if (lvl >= 7) return { text: '九成新', color: '#722ed1', bg: '#f9f0ff' }
-  if (lvl >= 5) return { text: '八成新', color: '#1890ff', bg: '#e6f7ff' }
-  return { text: '其他', color: '#999', bg: '#f5f5f5' }
+  const lvl = Number(product.value?.conditionLevel)
+  const text = conditionLevelText(product.value?.conditionLevel)
+  if (!Number.isFinite(lvl)) {
+    // 没值时按"全新"配色兜底,文案 - 由 conditionLevelText 决定
+    return { text, color: '#52c41a', bg: '#f6ffed' }
+  }
+  if (lvl >= 10) return { text, color: '#52c41a', bg: '#f6ffed' } // 10=全新
+  if (lvl >= 7)  return { text, color: '#722ed1', bg: '#f9f0ff' } // 7-9 较新
+  if (lvl >= 5)  return { text, color: '#1890ff', bg: '#e6f7ff' } // 5-6 中等
+  return { text, color: '#999', bg: '#f5f5f5' }                    // 1-4 较弱
 })
 
 const tradeMethodText = (m) =>
   ({ FACE_TO_FACE: '自提', EXPRESS: '邮递', BOTH: '两者皆可' }[m] || '两者皆可')
+
+// 运费标签：包邮(绿)/ 运费 ¥X(橙)；freight 为 null/undefined 时按包邮处理
+const freightTag = computed(() => {
+  const f = Number(product.value?.freight)
+  if (!Number.isFinite(f) || f <= 0) {
+    return { text: '包邮', class: 'tag-free-ship' }
+  }
+  return {
+    text: `运费 ¥${f.toFixed(2)}`,
+    class: 'tag-pay-ship',
+  }
+})
 
 const stockPercent = computed(() => {
   const stock = product.value?.stock ?? product.value?.quantity ?? 1
@@ -383,6 +495,15 @@ const onReportSuccess = () => {
             <el-icon><CreditCard /></el-icon>
             {{ tradeMethodText(product.tradeMethod) }}
           </span>
+          <!-- 仅交易方式含 EXPRESS 才展示运费/包邮标签 -->
+          <span
+            v-if="product.tradeMethod === 'EXPRESS' || product.tradeMethod === 'BOTH'"
+            class="tag"
+            :class="freightTag.class"
+          >
+            <el-icon><Van /></el-icon>
+            {{ freightTag.text }}
+          </span>
           <span class="tag tag-camera">
             <el-icon><View /></el-icon>
             {{ product.categoryName || '其他' }}
@@ -517,6 +638,40 @@ const onReportSuccess = () => {
           </el-button>
         </div>
 
+        <!-- AI 智能总结（手动触发：默认显示按钮，点击后才调接口） -->
+        <div class="ai-summary-card">
+          <div class="sub-title">
+            <el-icon class="title-icon"><MagicStick /></el-icon>
+            <span>AI 智能总结</span>
+            <span class="ai-badge">DeepSeek</span>
+          </div>
+          <!-- idle:默认状态,显示按钮 -->
+          <div v-if="aiSummaryState === 'idle'" class="ai-summary-trigger">
+            <span class="ai-hint">点击让 AI 基于商品描述生成 80 字卖点摘要</span>
+            <button class="ai-btn" @click="triggerGoodsSummary">
+              <el-icon><MagicStick /></el-icon>
+              <span>AI 总结</span>
+            </button>
+          </div>
+          <!-- loading -->
+          <div v-else-if="aiSummaryState === 'loading'" class="ai-summary-loading">
+            <el-icon class="loading-icon"><MagicStick /></el-icon>
+            正在分析商品信息…
+          </div>
+          <!-- typing / loaded:共用排版,typing 时末尾追加闪烁光标 -->
+          <div v-else-if="aiSummaryState === 'typing' || aiSummaryState === 'loaded'" class="ai-summary-text">
+            {{ aiSummary }}<span v-if="aiSummaryState === 'typing'" class="ai-cursor">▍</span>
+          </div>
+          <!-- error:提供重试入口 -->
+          <div v-else class="ai-summary-error">
+            <span>总结生成失败，请稍后再试</span>
+            <button class="ai-btn" @click="triggerGoodsSummary">
+              <el-icon><RefreshRight /></el-icon>
+              <span>重试</span>
+            </button>
+          </div>
+        </div>
+
         <div class="tab-row">
           <div
             class="tab-pill"
@@ -583,6 +738,43 @@ const onReportSuccess = () => {
               </span>
               <span class="score">{{ Number(reviewStats.rating || 0).toFixed(1) }}</span>
               <span class="count">（{{ reviewCount }} 条评价）</span>
+            </div>
+          </div>
+
+          <!-- 评价 AI 总结（手动触发：默认显示按钮，点击后才调接口,只读买家对卖家的评价） -->
+          <div class="review-ai-card">
+            <div class="sub-title">
+              <el-icon class="title-icon"><MagicStick /></el-icon>
+              <span>评价 AI 总结</span>
+              <span class="ai-badge">DeepSeek</span>
+            </div>
+            <div v-if="reviewSummaryState === 'idle'" class="ai-summary-trigger">
+              <span class="ai-hint">点击让 AI 基于买家评价总结优缺点（{{ visibleReviews.length }} 条可用评价）</span>
+              <button
+                class="ai-btn"
+                :disabled="visibleReviews.length === 0"
+                @click="triggerReviewSummary"
+              >
+                <el-icon><MagicStick /></el-icon>
+                <span>AI 总结</span>
+              </button>
+            </div>
+            <div v-else-if="reviewSummaryState === 'loading'" class="ai-summary-loading">
+              <el-icon class="loading-icon"><MagicStick /></el-icon>
+              正在分析买家评价…
+            </div>
+            <div v-else-if="reviewSummaryState === 'typing' || reviewSummaryState === 'loaded'" class="ai-summary-text">
+              <div class="ai-meta">
+                基于 <b>{{ reviewSummaryCount }}</b> 条评价 · 平均 <b>{{ reviewSummaryAvgRating.toFixed(1) }}</b> 星
+              </div>
+              <div class="ai-body">{{ reviewSummary }}<span v-if="reviewSummaryState === 'typing'" class="ai-cursor">▍</span></div>
+            </div>
+            <div v-else class="ai-summary-error">
+              <span>总结生成失败，请稍后再试</span>
+              <button class="ai-btn" @click="triggerReviewSummary">
+                <el-icon><RefreshRight /></el-icon>
+                <span>重试</span>
+              </button>
             </div>
           </div>
 
@@ -760,6 +952,17 @@ const onReportSuccess = () => {
   font-weight: 500;
 }
 .tag :deep(.el-icon) { font-size: 13px; }
+/* 运费标签：包邮绿/收费橙,与现有 conditionTag 色板协调 */
+.tag-free-ship {
+  color: #52c41a;
+  background: #f6ffed;
+  border: 1px solid #b7eb8f;
+}
+.tag-pay-ship {
+  color: #ff6b35;
+  background: #fff5f0;
+  border: 1px solid #ffd5b8;
+}
 
 .stat-row {
   display: flex;
@@ -1178,6 +1381,137 @@ const onReportSuccess = () => {
   transition: transform 0.2s;
 }
 .review-img:hover { transform: scale(1.05); }
+
+/* ========== AI 智能总结卡片 ==========
+   淡橙渐变底呼应主色 #ff6b35;失败/为空/null 时整块隐藏 */
+.ai-summary-card {
+  margin-bottom: 18px;
+  padding: 18px 20px;
+  background: linear-gradient(135deg, #fff7f0 0%, #fff 100%);
+  border: 1px solid #ffe4d2;
+  border-radius: 12px;
+  box-shadow: 0 1px 4px rgba(255, 107, 53, 0.08);
+}
+/* 标题图标颜色覆盖：.sub-title 默认色为 #1f1f1f,这里改成品牌橙 */
+.ai-summary-card .title-icon { color: #ff6b35; }
+/* DeepSeek 小角标：白底橙边,左侧紧跟标题文字 */
+.ai-badge {
+  margin-left: 4px;
+  padding: 1px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 500;
+  color: #ff6b35;
+  background: #fff;
+  border: 1px solid #ffd4b8;
+  line-height: 1.4;
+}
+/* 加载中提示:浅灰文字 + 闪烁图标 */
+.ai-summary-loading {
+  padding: 8px 0 0;
+  color: #999;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.ai-summary-loading .loading-icon {
+  color: #ff8c5a;
+  animation: ai-spin 1.4s linear infinite;
+}
+@keyframes ai-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+/* 总结正文:与 .desc-text 同款(保留换行),但去掉灰底,因为卡片本身已有底色 */
+.ai-summary-text {
+  margin-top: 10px;
+  padding: 12px 14px;
+  background: #fff;
+  border-radius: 8px;
+  font-size: 14px;
+  line-height: 1.8;
+  color: #333;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* 手动触发的提示行 + 按钮 */
+.ai-summary-trigger,
+.ai-summary-error {
+  margin-top: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+}
+.ai-hint { color: #999; flex: 1; }
+.ai-summary-error { color: #c45656; }
+
+/* AI 触发/重试按钮:橙色主色,与品牌一致 */
+.ai-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 14px;
+  border: none;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #ff8c5a 0%, #ff6b35 100%);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: transform 0.15s, box-shadow 0.15s, opacity 0.15s;
+  box-shadow: 0 1px 3px rgba(255, 107, 53, 0.25);
+}
+.ai-btn:hover { transform: translateY(-1px); box-shadow: 0 2px 6px rgba(255, 107, 53, 0.35); }
+.ai-btn:active { transform: translateY(0); }
+.ai-btn :deep(.el-icon) { font-size: 14px; }
+/* 评价卡片用更内敛的样式变体:浅色底 + 橙边,呼应主色但不抢眼 */
+.review-ai-card {
+  background: linear-gradient(135deg, #fff7f0 0%, #fff 100%);
+  border: 1px solid #ffe4d2;
+  border-radius: 12px;
+  padding: 14px 16px;
+  margin-bottom: 16px;
+  box-shadow: 0 1px 4px rgba(255, 107, 53, 0.06);
+}
+.review-ai-card .ai-summary-text {
+  background: #fff;
+  border: 1px dashed #ffd4b8;
+}
+
+/* ========== 打字机光标 ==========
+   ▍ 用 inline-block 渲染,opacity 步进式闪烁(0.7s 一次),比 linear 更像终端
+   颜色用品牌橙,与卡片整体风格呼应 */
+.ai-cursor {
+  display: inline-block;
+  margin-left: 1px;
+  color: #ff6b35;
+  font-weight: 700;
+  animation: ai-cursor-blink 0.7s step-end infinite;
+  vertical-align: baseline;
+}
+@keyframes ai-cursor-blink {
+  0%, 50% { opacity: 1; }
+  50.01%, 100% { opacity: 0; }
+}
+
+/* 评价 AI 卡片 meta 行:基于真实数据展示"X 条评价 / 平均 X.X 星",
+   这部分数据前端自己算,跟 AI 输出无关 —— 防 AI 幻觉条数 */
+.ai-meta {
+  font-size: 12px;
+  color: #999;
+  padding-bottom: 8px;
+  margin-bottom: 10px;
+  border-bottom: 1px dashed #ffd4b8;
+}
+.ai-meta b {
+  color: #ff6b35;
+  font-weight: 600;
+  margin: 0 1px;
+}
 
 /* 旧 el-dialog 预览 (.preview-dialog / .preview-box / .preview-img /
    .preview-label / .preview-thumbs / .thumb) 已废弃，改为共享 ImageViewer */
